@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sentence Reactor</title>
+    <link rel="stylesheet" href="./styles.css?v=soft-yellow-1">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace" aria-label="Sentence shadowing workspace">
+        <aside class="side-panel">
+          <div class="brand-row">
+            <div class="brand-mark" aria-hidden="true">SR</div>
+            <div>
+              <h1>Sentence Reactor</h1>
+              <p>English shadowing studio</p>
+            </div>
+          </div>
+
+          <img class="study-visual" src="./assets/study-audio-panel.png" alt="Headphones and a laptop prepared for audio practice">
+
+          <div class="stats-grid" aria-label="Session statistics">
+            <div>
+              <span id="sentenceCount">0</span>
+              <small>句</small>
+            </div>
+            <div>
+              <span id="voiceCount">0</span>
+              <small>AI声音</small>
+            </div>
+            <div>
+              <span id="doneCount">0</span>
+              <small>已练</small>
+            </div>
+          </div>
+
+          <div class="master-controls" aria-label="Playback controls">
+            <button class="primary-button" id="playAllButton" type="button">
+              <span aria-hidden="true">▶</span>
+              全部播放
+            </button>
+            <button class="icon-button" id="stopButton" type="button" aria-label="停止">
+              <span aria-hidden="true">■</span>
+            </button>
+          </div>
+        </aside>
+
+        <section class="main-panel">
+          <header class="top-bar">
+            <div>
+              <p class="eyebrow">Text to native-style line practice</p>
+              <h2>粘贴文本，按句跟读</h2>
+            </div>
+            <div class="top-actions">
+              <label class="toggle">
+                <input id="autoSplitToggle" type="checkbox" checked>
+                <span>自动分句</span>
+              </label>
+              <button class="ghost-button" id="loadSampleButton" type="button">示例</button>
+            </div>
+          </header>
+
+          <section class="input-zone" aria-label="Text input">
+            <textarea id="sourceText" spellcheck="false" placeholder="Paste English text here. The page will split it sentence by sentence."></textarea>
+            <div class="input-actions">
+              <button class="secondary-button" id="splitButton" type="button">
+                <span aria-hidden="true">↵</span>
+                重新分句
+              </button>
+              <button class="ghost-button" id="clearButton" type="button">清空</button>
+              <p id="voiceStatus" role="status">正在连接 Kokoro TTS…</p>
+            </div>
+          </section>
+
+          <section class="practice-toolbar" aria-label="Practice settings">
+            <label class="global-voice-control">
+              <span>全局声音</span>
+              <div class="voice-default-row">
+                <select id="globalVoice"></select>
+                <button class="tiny-button" id="saveDefaultVoiceButton" type="button">设为默认</button>
+              </div>
+              <small id="defaultVoiceStatus">未设置默认声音</small>
+            </label>
+            <label class="global-rate-control">
+              <span>全局速度</span>
+              <div class="rate-default-row">
+                <input id="globalRate" type="range" min="0.65" max="1.15" value="0.88" step="0.01">
+                <output id="globalRateValue">0.88x</output>
+                <button class="tiny-button" id="saveDefaultRateButton" type="button">设为默认</button>
+              </div>
+              <small id="defaultRateStatus">未设置默认速度</small>
+            </label>
+            <label>
+              <span>默认重复</span>
+              <input id="globalRepeat" type="number" min="1" max="5" value="1">
+            </label>
+            <button class="ghost-button" id="applyDefaultsButton" type="button">应用到全部句子</button>
+          </section>
+
+          <details class="shadow-panel" id="shadowPanel">
+            <summary>
+              <span>整段影子跟读</span>
+              <span id="shadowSummary">等待文本</span>
+            </summary>
+            <div class="shadow-content">
+              <div class="shadow-controls">
+                <button class="secondary-button" id="shadowPlayButton" type="button">
+                  <span aria-hidden="true">▶</span>
+                  开始整段跟读
+                </button>
+                <p id="shadowStatus">输入文本后会自动拆成自然语块。</p>
+              </div>
+              <div class="shadow-segments" id="shadowSegments"></div>
+            </div>
+          </details>
+
+          <section class="sentence-area" aria-label="Sentences">
+            <div class="empty-state" id="emptyState">
+              <strong>等待文本</strong>
+              <span>输入英文后会自动变成可播放的逐句队列。</span>
+            </div>
+            <div class="sentence-list" id="sentenceList"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <template id="sentenceTemplate">
+      <article class="sentence-card">
+        <div class="sentence-main">
+          <div class="sentence-copy">
+            <div class="sentence-meta">
+              <div class="sentence-meta-left">
+                <span class="sentence-index"></span>
+                <span class="audio-state"></span>
+              </div>
+              <div class="sentence-actions">
+                <button class="tiny-button done-toggle" type="button">标记已练</button>
+                <label class="compact-rate">
+                  <span>速度</span>
+                  <select class="rate-input">
+                    <option value="0.75">0.75x</option>
+                    <option value="0.85">0.85x</option>
+                    <option value="0.88">0.88x</option>
+                    <option value="0.95">0.95x</option>
+                    <option value="1">1.00x</option>
+                    <option value="1.08">1.08x</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <p class="sentence-text"></p>
+            <div class="prosody-box" aria-label="Native speaking cues">
+              <div class="prosody-header">
+                <button class="round-button play-sentence" type="button" aria-label="播放此句">
+                  <span aria-hidden="true">▶</span>
+                </button>
+                <div class="prosody-title">跟读提示</div>
+              </div>
+              <div class="prosody-line"></div>
+              <div class="prosody-legend" aria-hidden="true">
+                <span class="legend-stress">重读</span>
+                <span class="legend-weak">弱读</span>
+                <span>‿ 连读</span>
+                <span>/ 停顿</span>
+                <span>↓ ↑ 语调</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sentence-settings">
+          <label>
+            <span>重复</span>
+            <input class="repeat-input" type="number" min="1" max="5">
+          </label>
+        </div>
+      </article>
+    </template>
+
+    <script src="./app.js?v=native-phrasing-4"></script>
+  </body>
+</html>
