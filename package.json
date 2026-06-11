@@ -1,0 +1,12 @@
+{
+  "name": "sentence-reactor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node outputs/server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
