@@ -11,7 +11,6 @@ const clearButton = document.querySelector("#clearButton");
 const loadSampleButton = document.querySelector("#loadSampleButton");
 const autoSplitToggle = document.querySelector("#autoSplitToggle");
 const playAllButton = document.querySelector("#playAllButton");
-const stopButton = document.querySelector("#stopButton");
 const globalVoice = document.querySelector("#globalVoice");
 const saveDefaultVoiceButton = document.querySelector("#saveDefaultVoiceButton");
 const defaultVoiceStatus = document.querySelector("#defaultVoiceStatus");
@@ -22,13 +21,24 @@ const defaultRateStatus = document.querySelector("#defaultRateStatus");
 const globalRepeat = document.querySelector("#globalRepeat");
 const applyDefaultsButton = document.querySelector("#applyDefaultsButton");
 const shadowPlayButton = document.querySelector("#shadowPlayButton");
+const shadowReadButton = document.querySelector("#shadowReadButton");
+const shadowMarksToggle = document.querySelector("#shadowMarksToggle");
 const shadowStatus = document.querySelector("#shadowStatus");
 const shadowSummary = document.querySelector("#shadowSummary");
 const shadowSegments = document.querySelector("#shadowSegments");
+const shadowAttemptResult = document.querySelector("#shadowAttemptResult");
+const profileLink = document.querySelector("#profileLink");
+const profileMenu = document.querySelector("#profileMenu");
+const practiceRecordsLink = document.querySelector("#practiceRecordsLink");
+const recordsPanel = document.querySelector("#recordsPanel");
+const recordsList = document.querySelector("#recordsList");
+const recordsSummary = document.querySelector("#recordsSummary");
+const closeRecordsButton = document.querySelector("#closeRecordsButton");
 
 const sampleText = `I used to think fluency meant speaking quickly. Then I noticed that clear speakers pause often, stress important words, and let each sentence breathe. If you practice one sentence at a time, your pronunciation becomes more natural.`;
 const defaultVoiceStorageKey = "sentenceReactorDefaultKokoroVoice";
 const defaultRateStorageKey = "sentenceReactorDefaultRate";
+const practiceRecordsStorageKey = "echoLinesPracticeRecords";
 
 const KOKORO_VOICES = [
   { id: "af_heart", label: "Heart · clear American tutor" },
@@ -67,8 +77,16 @@ let kokoroAvailable = false;
 let playbackToken = 0;
 let preloadRunId = 0;
 let preloadTimer = null;
+let shadowPreloadRunId = 0;
+let shadowPreloadTimer = null;
 let shadowChunks = [];
 let shadowPlaying = false;
+let shadowSinglePlaying = false;
+let shadowReading = false;
+let shadowMarksHidden = false;
+let isRecording = false;
+let mediaStream = null;
+const sentenceHoverTimers = new Map();
 const preloadConcurrency = 2;
 
 const audioCache = new Map();
@@ -219,6 +237,123 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function normalizeForScoring(text) {
+  return text
+    .toLowerCase()
+    .replace(/[’]/g, "'")
+    .replace(/[^a-z0-9'\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeForScoring(text) {
+  return normalizeForScoring(text).split(" ").filter(Boolean);
+}
+
+function levenshteinDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = Array(right.length + 1).fill(0);
+
+  for (let i = 1; i <= left.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const substitution = previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1);
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, substitution);
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+
+  return previous[right.length];
+}
+
+function compareWords(referenceText, spokenText) {
+  const referenceWords = tokenizeForScoring(referenceText);
+  const spokenWords = tokenizeForScoring(spokenText);
+  const used = new Set();
+
+  return referenceWords.map((word) => {
+    let bestIndex = -1;
+    let bestScore = 0;
+
+    spokenWords.forEach((spoken, index) => {
+      if (used.has(index)) return;
+      if (spoken === word) {
+        bestIndex = index;
+        bestScore = 1;
+        return;
+      }
+
+      const distance = levenshteinDistance(word, spoken);
+      const similarity = 1 - distance / Math.max(word.length, spoken.length, 1);
+      if (similarity > bestScore) {
+        bestIndex = index;
+        bestScore = similarity;
+      }
+    });
+
+    if (bestIndex > -1 && bestScore >= 0.82) {
+      used.add(bestIndex);
+      return { word, status: "good" };
+    }
+
+    if (bestIndex > -1 && bestScore >= 0.58) {
+      used.add(bestIndex);
+      return { word, status: "ok" };
+    }
+
+    return { word, status: "miss" };
+  });
+}
+
+function scoreAttempt(referenceText, spokenText, expectedMs, recordedMs) {
+  const compared = compareWords(referenceText, spokenText);
+  const good = compared.filter((item) => item.status === "good").length;
+  const ok = compared.filter((item) => item.status === "ok").length;
+  const total = Math.max(compared.length, 1);
+  const accuracy = (good + ok * 0.58) / total;
+  const completeness = Math.min(tokenizeForScoring(spokenText).length / total, 1);
+  const pacingRatio = expectedMs > 0 ? recordedMs / expectedMs : 1;
+  const pacing = clamp(1 - Math.abs(1 - pacingRatio) * 0.45, 0, 1);
+  const fluency = spokenText ? pacing : 0;
+  const score = clamp((accuracy * 0.52 + completeness * 0.22 + fluency * 0.26) * 10, 0, 10);
+
+  return {
+    score: Number(score.toFixed(1)),
+    accuracy: Number((accuracy * 10).toFixed(1)),
+    completeness: Number((completeness * 10).toFixed(1)),
+    fluency: Number((fluency * 10).toFixed(1)),
+    rhythm: Number((pacing * 10).toFixed(1)),
+    compared
+  };
+}
+
+function buildFeedback(score, transcript) {
+  if (!transcript) {
+    return "没有识别到清晰语音。请确认浏览器允许麦克风权限，并靠近麦克风再读一次。";
+  }
+
+  if (score.score >= 8.5) {
+    return "整体很清楚，完整度和节奏都不错。下一步可以更关注重读词和句尾语调，让表达更像自然对话。";
+  }
+
+  if (score.score >= 6.5) {
+    return "整体可以理解，但有些词可能读得不够清楚或节奏略不稳定。建议放慢一点，把重读词读得更饱满。";
+  }
+
+  return "这次和原文差异比较明显。建议先只练这一小句，听一遍后马上跟读，优先保证每个关键词完整读出来。";
+}
+
+function createRecordId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `record-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function renderComparedWords(compared) {
+  return compared
+    .map((item) => `<span class="spoken-word is-${item.status}">${escapeHtml(item.word)}</span>`)
+    .join(" ");
 }
 
 function isWord(token) {
@@ -391,6 +526,60 @@ function updateStats() {
   emptyState.hidden = sentences.length > 0;
 }
 
+function formatRecordTime(timestamp) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
+}
+
+async function renderPracticeRecords() {
+  recordsPanel.hidden = false;
+  recordsList.innerHTML = `<p class="records-empty">正在读取练习记录…</p>`;
+
+  try {
+    const records = await getPracticeRecords();
+    const totalMinutes = records.reduce((sum, record) => sum + (record.durationMs || 0), 0) / 60000;
+    recordsSummary.textContent = records.length
+      ? `共 ${records.length} 次练习 · 约 ${totalMinutes.toFixed(1)} 分钟`
+      : "还没有练习记录。完成一次跟读录音后会自动保存到这里。";
+
+    if (!records.length) {
+      recordsList.innerHTML = `<p class="records-empty">暂无记录</p>`;
+      return;
+    }
+
+    recordsList.innerHTML = "";
+    records.forEach((record) => {
+      const article = document.createElement("article");
+      article.className = "record-card";
+      const audioUrl = record.audioBlob ? URL.createObjectURL(record.audioBlob) : "";
+      article.innerHTML = `
+        <div class="record-card-header">
+          <span>${record.type === "paragraph" ? "整段跟读" : "分句跟读"}</span>
+          <time>${formatRecordTime(record.createdAt)}</time>
+          <strong>${record.score?.score ?? "-"} / 10</strong>
+        </div>
+        <p class="record-text">${escapeHtml(record.text || "")}</p>
+        <p class="record-transcript">${escapeHtml(record.transcript || "未识别到清晰语音")}</p>
+        <p class="attempt-metrics">
+          发音准确度 ${record.score?.accuracy ?? "-"} · 完整度 ${record.score?.completeness ?? "-"} · 流利度 ${record.score?.fluency ?? "-"} · 节奏 ${record.score?.rhythm ?? "-"}
+        </p>
+        <p class="attempt-feedback">${escapeHtml(record.feedback || "")}</p>
+        ${audioUrl ? `<audio controls src="${audioUrl}"></audio>` : ""}
+      `;
+      recordsList.append(article);
+    });
+
+    recordsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    recordsSummary.textContent = "读取练习记录失败。";
+    recordsList.innerHTML = `<p class="attempt-error">${escapeHtml(error.message)}</p>`;
+  }
+}
+
 function renderVoiceOptions(select, selectedVoice) {
   select.innerHTML = "";
 
@@ -451,15 +640,15 @@ function updateDefaultRateStatus(saved = false) {
   const savedRate = Number(localStorage.getItem(defaultRateStorageKey));
   const min = Number(globalRate.min);
   const max = Number(globalRate.max);
+  defaultRateStatus.hidden = true;
+
   if (!Number.isFinite(savedRate) || savedRate < min || savedRate > max) {
     localStorage.removeItem(defaultRateStorageKey);
-    defaultRateStatus.textContent = "未设置默认速度";
+    defaultRateStatus.textContent = "";
     return;
   }
 
-  defaultRateStatus.textContent = saved
-    ? `已保存默认：${savedRate.toFixed(2)}x`
-    : `默认：${savedRate.toFixed(2)}x`;
+  defaultRateStatus.textContent = saved ? `已保存默认：${savedRate.toFixed(2)}x` : "";
 }
 
 function getWordCount(text) {
@@ -572,6 +761,10 @@ function renderShadowPractice() {
   const paragraphs = getShadowParagraphs(sourceText.value);
   shadowChunks = [];
   shadowSegments.innerHTML = "";
+  shadowAttemptResult.hidden = true;
+  shadowAttemptResult.innerHTML = "";
+  shadowSegments.classList.toggle("is-plain", shadowMarksHidden);
+  shadowMarksToggle.textContent = shadowMarksHidden ? "显示所有标记" : "隐藏所有标记";
 
   const paragraphChunks = paragraphs.map((paragraph) => {
     const chunks = splitIntoShadowChunks(paragraph);
@@ -579,11 +772,13 @@ function renderShadowPractice() {
     return chunks;
   });
 
-  shadowSummary.textContent = shadowChunks.length ? `${shadowChunks.length} 个跟读停顿` : "等待文本";
+  shadowSummary.textContent = "";
   shadowPlayButton.disabled = !shadowChunks.length || !canRequestSpeech();
+  shadowReadButton.disabled = !shadowChunks.length || !canRequestSpeech();
+  shadowMarksToggle.disabled = !shadowChunks.length;
 
   if (!shadowChunks.length) {
-    shadowStatus.textContent = "输入文本后会自动拆成自然语块。";
+    shadowStatus.textContent = "";
     return;
   }
 
@@ -596,7 +791,10 @@ function renderShadowPractice() {
       const span = document.createElement("span");
       span.className = "shadow-chunk";
       span.dataset.index = String(chunkIndex);
-      span.innerHTML = buildProsodyMarkup(chunk);
+      span.tabIndex = 0;
+      span.setAttribute("role", "button");
+      span.setAttribute("aria-label", `单独播放语块 ${chunkIndex + 1}`);
+      span.innerHTML = shadowMarksHidden ? escapeHtml(chunk) : buildProsodyMarkup(chunk);
       paragraph.append(span);
       if (index < chunks.length - 1) paragraph.append(" ");
       chunkIndex += 1;
@@ -605,7 +803,8 @@ function renderShadowPractice() {
     shadowSegments.append(paragraph);
   });
 
-  shadowStatus.textContent = "准备好了。点击后会按语义和自然停顿，一段段读给你跟。";
+  shadowStatus.textContent = "";
+  schedulePreloadShadowChunks();
 }
 
 function setActiveShadowSegment(index) {
@@ -616,13 +815,14 @@ function setActiveShadowSegment(index) {
 
 function renderSentences() {
   sentenceList.innerHTML = "";
+  sentenceHoverTimers.forEach((timer) => window.clearTimeout(timer));
+  sentenceHoverTimers.clear();
   updateStats();
 
   sentences.forEach((sentence, index) => {
     const fragment = sentenceTemplate.content.cloneNode(true);
     const card = fragment.querySelector(".sentence-card");
     const playButton = fragment.querySelector(".play-sentence");
-    const doneToggle = fragment.querySelector(".done-toggle");
     const rateInput = fragment.querySelector(".rate-input");
     const repeatInput = fragment.querySelector(".repeat-input");
     const audioState = fragment.querySelector(".audio-state");
@@ -641,14 +841,10 @@ function renderSentences() {
 
     rateInput.value = String(settings[index].rate);
     repeatInput.value = String(settings[index].repeat);
-    doneToggle.classList.toggle("is-on", settings[index].done);
-    doneToggle.textContent = settings[index].done ? "已练过" : "标记已练";
 
     playButton.addEventListener("click", () => playSentence(index));
-    doneToggle.addEventListener("click", () => {
-      settings[index].done = !settings[index].done;
-      renderSentences();
-    });
+    card.addEventListener("mouseenter", () => startSentenceHoverTimer(index));
+    card.addEventListener("mouseleave", () => clearSentenceHoverTimer(index));
     rateInput.addEventListener("change", () => {
       clearAudioCacheForSentence(index);
       settings[index].rate = Number(rateInput.value);
@@ -665,6 +861,289 @@ function renderSentences() {
 
   updateButtonStates();
   updateSentenceAudioStates();
+}
+
+function updateDoneVisual(index) {
+  const card = sentenceList.querySelector(`.sentence-card[data-index="${index}"]`);
+  if (!card) return;
+  card.classList.toggle("is-done", Boolean(settings[index]?.done));
+}
+
+function markSentenceDone(index) {
+  if (!settings[index] || settings[index].done) return;
+  settings[index].done = true;
+  clearSentenceHoverTimer(index);
+  updateDoneVisual(index);
+  updateStats();
+}
+
+function renderAttemptResult(container, result, audioUrl) {
+  if (!container) return;
+  container.hidden = false;
+  container.innerHTML = `
+    <div class="attempt-score">
+      <strong>${result.score.score}</strong>
+      <span>/ 10</span>
+    </div>
+    <div class="attempt-body">
+      <p class="attempt-label">你的跟读</p>
+      <p class="attempt-transcript">${escapeHtml(result.transcript || "未识别到清晰语音")}</p>
+      <p class="attempt-compare">${renderComparedWords(result.score.compared)}</p>
+      <p class="attempt-metrics">
+        发音准确度 ${result.score.accuracy} · 完整度 ${result.score.completeness} · 流利度 ${result.score.fluency} · 节奏 ${result.score.rhythm}
+      </p>
+      <p class="attempt-feedback">${escapeHtml(result.feedback)}</p>
+      ${audioUrl ? `<audio controls src="${audioUrl}"></audio>` : ""}
+    </div>
+  `;
+}
+
+async function recordSentenceAttempt(index, expectedMs, token) {
+  const card = sentenceList.querySelector(`.sentence-card[data-index="${index}"]`);
+  const resultContainer = card?.querySelector(".attempt-result");
+  if (!sentences[index] || !resultContainer || token !== playbackToken) return;
+
+  try {
+    const recording = await recordForDuration(expectedMs, voiceStatus);
+    if (token !== playbackToken) return;
+
+    const score = scoreAttempt(sentences[index], recording.transcript, expectedMs, recording.durationMs);
+    const feedback = buildFeedback(score, recording.transcript);
+    const record = {
+      id: createRecordId(),
+      type: "sentence",
+      createdAt: Date.now(),
+      text: sentences[index],
+      transcript: recording.transcript,
+      score,
+      feedback,
+      durationMs: recording.durationMs,
+      audioBlob: recording.blob
+    };
+    await savePracticeRecord(record);
+    renderAttemptResult(resultContainer, record, URL.createObjectURL(recording.blob));
+    updateVoiceStatus(`第 ${index + 1} 句跟读评分完成`);
+  } catch (error) {
+    isRecording = false;
+    updateButtonStates();
+    if (resultContainer) {
+      resultContainer.hidden = false;
+      resultContainer.innerHTML = `<p class="attempt-error">${escapeHtml(error.message)}</p>`;
+    }
+    updateVoiceStatus(`录音失败：${error.message}`);
+  }
+}
+
+async function recordShadowAttempt(referenceChunks, expectedMsList, token) {
+  const attempts = [];
+  shadowAttemptResult.hidden = true;
+  shadowAttemptResult.innerHTML = "";
+
+  for (let index = 0; index < referenceChunks.length; index += 1) {
+    if (token !== playbackToken) return null;
+    setActiveShadowSegment(index);
+    shadowStatus.textContent = `跟读录音 ${index + 1}/${referenceChunks.length}`;
+    const recording = await recordForDuration(expectedMsList[index], shadowStatus);
+    attempts.push(recording);
+  }
+
+  const referenceText = referenceChunks.join(" ");
+  const transcript = attempts.map((attempt) => attempt.transcript).filter(Boolean).join(" ");
+  const durationMs = attempts.reduce((sum, attempt) => sum + attempt.durationMs, 0);
+  const expectedMs = expectedMsList.reduce((sum, ms) => sum + ms, 0);
+  const score = scoreAttempt(referenceText, transcript, expectedMs, durationMs);
+  const feedback = buildFeedback(score, transcript);
+  const audioBlob = new Blob(attempts.map((attempt) => attempt.blob), { type: attempts[0]?.blob.type || "audio/webm" });
+  const record = {
+    id: createRecordId(),
+    type: "paragraph",
+    createdAt: Date.now(),
+    text: referenceText,
+    transcript,
+    score,
+    feedback,
+    durationMs,
+    audioBlob
+  };
+
+  await savePracticeRecord(record);
+  renderAttemptResult(shadowAttemptResult, record, URL.createObjectURL(audioBlob));
+  return record;
+}
+
+function startSentenceHoverTimer(index) {
+  if (!settings[index] || settings[index].done || sentenceHoverTimers.has(index)) return;
+  const timer = window.setTimeout(() => markSentenceDone(index), 120000);
+  sentenceHoverTimers.set(index, timer);
+}
+
+function clearSentenceHoverTimer(index) {
+  const timer = sentenceHoverTimers.get(index);
+  if (!timer) return;
+  window.clearTimeout(timer);
+  sentenceHoverTimers.delete(index);
+}
+
+function getSpeechRecognition() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
+
+  const recognition = new SpeechRecognition();
+  recognition.lang = "en-US";
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  return recognition;
+}
+
+async function getMicrophoneStream() {
+  if (mediaStream?.active) return mediaStream;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("当前浏览器不支持麦克风录音。请用 Chrome 或 Edge 测试。");
+  }
+
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  return mediaStream;
+}
+
+function startRecognitionCapture(durationMs) {
+  const recognition = getSpeechRecognition();
+  if (!recognition) {
+    return {
+      promise: Promise.resolve(""),
+      stop: () => {}
+    };
+  }
+
+  let transcript = "";
+  let settled = false;
+  let timeout = null;
+  let resolvePromise;
+
+  const promise = new Promise((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timeout);
+    try {
+      recognition.stop();
+    } catch {
+      // Recognition may already be stopped by the browser.
+    }
+    resolvePromise(transcript.trim());
+  };
+
+  recognition.onresult = (event) => {
+    transcript = Array.from(event.results)
+      .map((result) => result[0]?.transcript || "")
+      .join(" ")
+      .trim();
+  };
+  recognition.onerror = finish;
+  recognition.onend = () => {
+    if (!settled && transcript) finish();
+  };
+
+  try {
+    recognition.start();
+  } catch {
+    finish();
+  }
+
+  timeout = window.setTimeout(finish, Math.max(durationMs + 450, 1200));
+  return { promise, stop: finish };
+}
+
+async function recordForDuration(durationMs, statusTarget) {
+  if (typeof MediaRecorder === "undefined") {
+    throw new Error("当前浏览器不支持 MediaRecorder 录音。请用 Chrome 或 Edge 测试。");
+  }
+
+  const stream = await getMicrophoneStream();
+  const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? "audio/webm;codecs=opus"
+    : "";
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const chunks = [];
+  const startedAt = performance.now();
+  const recognition = startRecognitionCapture(durationMs);
+
+  isRecording = true;
+  if (statusTarget) statusTarget.textContent = `正在录音 ${Math.round(durationMs / 1000)} 秒…`;
+  updateButtonStates();
+
+  const recordingPromise = new Promise((resolve, reject) => {
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    recorder.onerror = () => reject(new Error("录音失败"));
+    recorder.onstop = () => {
+      const type = recorder.mimeType || "audio/webm";
+      resolve(new Blob(chunks, { type }));
+    };
+  });
+
+  recorder.start();
+  await pause(Math.max(durationMs, 900));
+  if (recorder.state !== "inactive") recorder.stop();
+  const blob = await recordingPromise;
+  const transcript = await recognition.promise;
+  isRecording = false;
+  updateButtonStates();
+
+  return {
+    blob,
+    transcript,
+    durationMs: performance.now() - startedAt
+  };
+}
+
+function openPracticeDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("EchoLinesPractice", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("records")) {
+        db.createObjectStore("records", { keyPath: "id" });
+      }
+    };
+  });
+}
+
+async function savePracticeRecord(record) {
+  const db = await openPracticeDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction("records", "readwrite");
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.objectStore("records").put(record);
+  });
+}
+
+async function getPracticeRecords() {
+  const db = await openPracticeDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction("records", "readonly");
+    const request = transaction.objectStore("records").getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const records = request.result || [];
+      records.sort((a, b) => b.createdAt - a.createdAt);
+      resolve(records);
+    };
+  });
+}
+
+function getAudioDurationMs() {
+  if (currentAudio && Number.isFinite(currentAudio.duration) && currentAudio.duration > 0) {
+    return currentAudio.duration * 1000;
+  }
+  return 1800;
 }
 
 function clamp(value, min, max) {
@@ -879,15 +1358,20 @@ async function playSentence(index, continueQueue = false) {
 
   try {
     const times = clamp(Number(settings[index].repeat) || 1, 1, 5);
+    let latestDurationMs = 0;
     for (let count = 0; count < times; count += 1) {
       if (activeIndex !== index || token !== playbackToken) return;
       await speakOnce(index, token);
+      latestDurationMs = getAudioDurationMs();
       if (token !== playbackToken) return;
       await pause(continueQueue ? 380 : 140);
     }
 
-    settings[index].done = true;
-    updateStats();
+    markSentenceDone(index);
+
+    if (!continueQueue && token === playbackToken) {
+      await recordSentenceAttempt(index, latestDurationMs || 1800, token);
+    }
 
     if (continueQueue && index + 1 < sentences.length) {
       isPlaying = false;
@@ -927,11 +1411,14 @@ function estimateShadowPause(chunk, audioDuration) {
 }
 
 async function playShadowPractice() {
-  if (shadowPlaying || isPlaying || isPreparingPlayback) {
+  if (shadowPlaying || shadowReading || shadowSinglePlaying || isPlaying || isPreparingPlayback) {
     stopPlayback();
     shadowPlaying = false;
+    shadowReading = false;
+    shadowSinglePlaying = false;
     setActiveShadowSegment(-1);
-    shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始整段跟读`;
+    shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始跟读`;
+    shadowReadButton.innerHTML = `<span aria-hidden="true">▶</span> 全文朗读`;
     shadowStatus.textContent = "已停止整段跟读。";
     return;
   }
@@ -941,8 +1428,10 @@ async function playShadowPractice() {
   stopPlayback();
   const token = ++playbackToken;
   shadowPlaying = true;
-  shadowPlayButton.innerHTML = `<span aria-hidden="true">■</span> 停止整段跟读`;
+  shadowPlayButton.innerHTML = `<span aria-hidden="true">■</span> 停止跟读`;
   updateButtonStates();
+  const attemptRecordings = [];
+  const expectedDurations = [];
 
   try {
     for (let index = 0; index < shadowChunks.length; index += 1) {
@@ -968,23 +1457,154 @@ async function playShadowPractice() {
       if (token !== playbackToken) return;
 
       const waitMs = estimateShadowPause(chunk, duration);
-      shadowStatus.textContent = `跟读时间 ${Math.round(waitMs / 1000)} 秒…`;
+      expectedDurations.push(waitMs);
+      shadowStatus.textContent = `请跟读 ${Math.round(waitMs / 1000)} 秒…`;
       updateButtonStates();
-      await pause(waitMs);
+      const recording = await recordForDuration(waitMs, shadowStatus);
+      attemptRecordings.push(recording);
     }
 
-    shadowStatus.textContent = "整段影子跟读完成。";
+    if (token === playbackToken && attemptRecordings.length) {
+      const referenceText = shadowChunks.join(" ");
+      const transcript = attemptRecordings.map((attempt) => attempt.transcript).filter(Boolean).join(" ");
+      const durationMs = attemptRecordings.reduce((sum, attempt) => sum + attempt.durationMs, 0);
+      const expectedMs = expectedDurations.reduce((sum, ms) => sum + ms, 0);
+      const score = scoreAttempt(referenceText, transcript, expectedMs, durationMs);
+      const feedback = buildFeedback(score, transcript);
+      const audioBlob = new Blob(attemptRecordings.map((attempt) => attempt.blob), {
+        type: attemptRecordings[0]?.blob.type || "audio/webm"
+      });
+      const record = {
+        id: createRecordId(),
+        type: "paragraph",
+        createdAt: Date.now(),
+        text: referenceText,
+        transcript,
+        score,
+        feedback,
+        durationMs,
+        audioBlob
+      };
+
+      await savePracticeRecord(record);
+      renderAttemptResult(shadowAttemptResult, record, URL.createObjectURL(audioBlob));
+    }
+
+    shadowStatus.textContent = "整段跟读完成。";
   } catch (error) {
     if (error.name !== "AbortError") {
       shadowStatus.textContent = `整段跟读失败：${error.message}`;
     }
   } finally {
     shadowPlaying = false;
+    shadowReading = false;
+    shadowSinglePlaying = false;
     isPlaying = false;
     isPreparingPlayback = false;
     setActiveShadowSegment(-1);
-    shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始整段跟读`;
+    shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始跟读`;
     updateButtonStates();
+  }
+}
+
+async function readShadowFullText() {
+  if (shadowReading || shadowPlaying || shadowSinglePlaying || isPlaying || isPreparingPlayback) {
+    stopPlayback();
+    shadowReading = false;
+    shadowPlaying = false;
+    shadowSinglePlaying = false;
+    setActiveShadowSegment(-1);
+    shadowReadButton.innerHTML = `<span aria-hidden="true">▶</span> 全文朗读`;
+    shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始跟读`;
+    return;
+  }
+
+  if (!shadowChunks.length) return;
+
+  stopPlayback();
+  const token = ++playbackToken;
+  shadowReading = true;
+  shadowReadButton.innerHTML = `<span aria-hidden="true">■</span> 停止朗读`;
+  updateButtonStates();
+
+  try {
+    for (let index = 0; index < shadowChunks.length; index += 1) {
+      if (token !== playbackToken) return;
+
+      setActiveShadowSegment(index);
+      shadowStatus.textContent = `全文朗读 ${index + 1}/${shadowChunks.length}`;
+      const url = await getSpeechUrlForText(
+        shadowChunks[index],
+        globalVoice.value,
+        Number(globalRate.value),
+        undefined,
+        { statusText: `Kokoro 正在生成语块 ${index + 1}/${shadowChunks.length}…` }
+      );
+
+      if (token !== playbackToken) return;
+      await playAudioUrl(url, token);
+      currentAudio = null;
+      isPlaying = false;
+      if (token !== playbackToken) return;
+      await pause(140);
+    }
+
+    shadowStatus.textContent = "全文朗读完成。";
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      shadowStatus.textContent = `全文朗读失败：${error.message}`;
+    }
+  } finally {
+    if (token === playbackToken) {
+      shadowReading = false;
+      isPlaying = false;
+      isPreparingPlayback = false;
+      currentAudio = null;
+      setActiveShadowSegment(-1);
+      shadowReadButton.innerHTML = `<span aria-hidden="true">▶</span> 全文朗读`;
+      updateButtonStates();
+    }
+  }
+}
+
+async function playShadowChunk(index) {
+  if (!shadowChunks[index] || !canRequestSpeech()) return;
+
+  stopPlayback();
+  const token = ++playbackToken;
+  shadowPlaying = false;
+  shadowReading = false;
+  shadowSinglePlaying = true;
+  shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始跟读`;
+  setActiveShadowSegment(index);
+  shadowStatus.textContent = `单独播放语块 ${index + 1}/${shadowChunks.length}`;
+  updateButtonStates();
+
+  try {
+    const url = await getSpeechUrlForText(
+      shadowChunks[index],
+      globalVoice.value,
+      Number(globalRate.value),
+      undefined,
+      { statusText: `Kokoro 正在生成语块 ${index + 1}/${shadowChunks.length}…` }
+    );
+
+    if (token !== playbackToken) return;
+    await playAudioUrl(url, token);
+    shadowStatus.textContent = `已播放语块 ${index + 1}/${shadowChunks.length}`;
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      shadowStatus.textContent = `语块播放失败：${error.message}`;
+    }
+  } finally {
+    if (token === playbackToken) {
+      shadowSinglePlaying = false;
+      isPlaying = false;
+      isPreparingPlayback = false;
+      currentAudio = null;
+      setActiveShadowSegment(-1);
+      updateButtonStates();
+    }
   }
 }
 
@@ -1037,8 +1657,11 @@ function stopPlayback(options = {}) {
 }
 
 function updateButtonStates() {
-  playAllButton.disabled = !sentences.length || !canRequestSpeech() || isPlaying || isPreparingPlayback;
-  stopButton.disabled = !isPlaying && !isPreparingPlayback && activeIndex < 0;
+  const playbackActive = isPlaying || isPreparingPlayback || isRecording || shadowPlaying || shadowReading || shadowSinglePlaying || activeIndex >= 0;
+  playAllButton.disabled = !playbackActive && (!sentences.length || !canRequestSpeech());
+  playAllButton.innerHTML = playbackActive
+    ? `<span aria-hidden="true">■</span> 停止播放`
+    : `<span aria-hidden="true">▶</span> 全部播放`;
   splitButton.disabled = !sourceText.value.trim();
 
   document.querySelectorAll(".play-sentence").forEach((button) => {
@@ -1046,6 +1669,8 @@ function updateButtonStates() {
   });
 
   shadowPlayButton.disabled = !shadowChunks.length || !canRequestSpeech();
+  shadowReadButton.disabled = !shadowChunks.length || !canRequestSpeech();
+  shadowMarksToggle.disabled = !shadowChunks.length;
   updateSentenceAudioStates();
 }
 
@@ -1069,6 +1694,8 @@ function applyGlobalDefaults() {
   audioFailures.clear();
   renderSentences();
   schedulePreloadAll();
+  renderShadowPractice();
+  schedulePreloadShadowChunks();
 }
 
 sourceText.addEventListener("input", () => {
@@ -1096,12 +1723,18 @@ loadSampleButton.addEventListener("click", () => {
 });
 
 playAllButton.addEventListener("click", () => {
+  if (isPlaying || isPreparingPlayback || shadowPlaying || shadowReading || shadowSinglePlaying || activeIndex >= 0) {
+    stopPlayback();
+    shadowPlaying = false;
+    shadowReading = false;
+    shadowSinglePlaying = false;
+    setActiveShadowSegment(-1);
+    shadowPlayButton.innerHTML = `<span aria-hidden="true">▶</span> 开始跟读`;
+    shadowReadButton.innerHTML = `<span aria-hidden="true">▶</span> 全文朗读`;
+    return;
+  }
   if (!sentences.length) return;
   playSentence(activeIndex >= 0 ? activeIndex : 0, true);
-});
-
-stopButton.addEventListener("click", () => {
-  stopPlayback();
 });
 
 globalVoice.addEventListener("change", () => {
@@ -1113,6 +1746,8 @@ globalVoice.addEventListener("change", () => {
   audioFailures.clear();
   renderSentences();
   schedulePreloadAll();
+  renderShadowPractice();
+  schedulePreloadShadowChunks();
 });
 
 saveDefaultVoiceButton.addEventListener("click", () => {
@@ -1122,6 +1757,7 @@ saveDefaultVoiceButton.addEventListener("click", () => {
 
 globalRate.addEventListener("input", () => {
   globalRateValue.value = `${Number(globalRate.value).toFixed(2)}x`;
+  schedulePreloadShadowChunks(700);
 });
 
 saveDefaultRateButton.addEventListener("click", () => {
@@ -1136,7 +1772,46 @@ globalRepeat.addEventListener("input", () => {
 
 applyDefaultsButton.addEventListener("click", applyGlobalDefaults);
 
+profileLink.addEventListener("click", (event) => {
+  event.preventDefault();
+  profileMenu.hidden = !profileMenu.hidden;
+});
+
+practiceRecordsLink.addEventListener("click", async () => {
+  profileMenu.hidden = true;
+  await renderPracticeRecords();
+});
+
+closeRecordsButton.addEventListener("click", () => {
+  recordsPanel.hidden = true;
+});
+
+document.addEventListener("click", (event) => {
+  if (event.target.closest(".nav-profile")) return;
+  profileMenu.hidden = true;
+});
+
 shadowPlayButton.addEventListener("click", playShadowPractice);
+shadowReadButton.addEventListener("click", readShadowFullText);
+
+shadowMarksToggle.addEventListener("click", () => {
+  shadowMarksHidden = !shadowMarksHidden;
+  renderShadowPractice();
+});
+
+shadowSegments.addEventListener("click", (event) => {
+  const chunk = event.target.closest(".shadow-chunk");
+  if (!chunk) return;
+  playShadowChunk(Number(chunk.dataset.index));
+});
+
+shadowSegments.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const chunk = event.target.closest(".shadow-chunk");
+  if (!chunk) return;
+  event.preventDefault();
+  playShadowChunk(Number(chunk.dataset.index));
+});
 
 async function detectKokoroProxy() {
   if (!["http:", "https:"].includes(window.location.protocol)) {
@@ -1156,6 +1831,7 @@ async function detectKokoroProxy() {
     updateVoiceStatus();
     updateButtonStates();
     schedulePreloadAll();
+    schedulePreloadShadowChunks();
   }
 }
 
@@ -1163,6 +1839,12 @@ function schedulePreloadAll(delay = 250) {
   preloadRunId += 1;
   window.clearTimeout(preloadTimer);
   preloadTimer = window.setTimeout(() => preloadAllSentences(), delay);
+}
+
+function schedulePreloadShadowChunks(delay = 350) {
+  shadowPreloadRunId += 1;
+  window.clearTimeout(shadowPreloadTimer);
+  shadowPreloadTimer = window.setTimeout(() => preloadShadowChunks(), delay);
 }
 
 async function preloadAllSentences() {
@@ -1198,6 +1880,45 @@ async function preloadAllSentences() {
 
   if (runId === preloadRunId) {
     updateVoiceStatus(`已预加载 ${readyCount}/${sentences.length} 句`);
+  }
+}
+
+async function preloadShadowChunks() {
+  const runId = ++shadowPreloadRunId;
+  if (!canRequestSpeech() || !shadowChunks.length) return;
+
+  let readyCount = 0;
+  let cursor = 0;
+  const voice = globalVoice.value;
+  const rate = Number(globalRate.value);
+
+  async function worker() {
+    while (cursor < shadowChunks.length && runId === shadowPreloadRunId) {
+      const index = cursor;
+      cursor += 1;
+      const chunk = shadowChunks[index];
+      const cacheKey = getTextAudioCacheKey(chunk, voice, rate);
+
+      if (audioCache.has(cacheKey)) {
+        readyCount += 1;
+        continue;
+      }
+
+      try {
+        await getSpeechUrlForText(chunk, voice, rate, cacheKey, { background: true });
+        readyCount += 1;
+      } catch {
+        // Continue preloading later chunks even if one fails.
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(preloadConcurrency, shadowChunks.length) }, () => worker())
+  );
+
+  if (runId === shadowPreloadRunId && shadowChunks.length) {
+    shadowStatus.textContent = `整段语块已预加载 ${readyCount}/${shadowChunks.length}`;
   }
 }
 

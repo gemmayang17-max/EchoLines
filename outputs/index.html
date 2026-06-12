@@ -3,69 +3,73 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sentence Reactor</title>
-    <link rel="stylesheet" href="./styles.css?v=soft-yellow-1">
+    <title>EchoLines</title>
+    <link rel="stylesheet" href="./styles.css?v=echolines-recorder-1">
   </head>
   <body>
     <main class="app-shell">
       <section class="workspace" aria-label="Sentence shadowing workspace">
         <aside class="side-panel">
           <div class="brand-row">
-            <div class="brand-mark" aria-hidden="true">SR</div>
-            <div>
-              <h1>Sentence Reactor</h1>
-              <p>English shadowing studio</p>
+            <div class="brand-main">
+              <img class="brand-logo" src="./assets/logo-b.png" alt="" aria-hidden="true">
+              <h1>EchoLines</h1>
             </div>
           </div>
+          <nav class="site-nav" aria-label="Site navigation">
+            <a href="#about">About</a>
+            <span class="nav-profile">
+              <a href="#profile" id="profileLink">Profile</a>
+              <span class="profile-menu" id="profileMenu" hidden>
+                <button type="button" id="practiceRecordsLink">练习记录</button>
+              </span>
+            </span>
+            <a class="nav-contact" href="#contact">Contact</a>
+          </nav>
 
-          <img class="study-visual" src="./assets/study-audio-panel.png" alt="Headphones and a laptop prepared for audio practice">
-
-          <div class="stats-grid" aria-label="Session statistics">
-            <div>
-              <span id="sentenceCount">0</span>
-              <small>句</small>
-            </div>
-            <div>
-              <span id="voiceCount">0</span>
-              <small>AI声音</small>
-            </div>
-            <div>
-              <span id="doneCount">0</span>
-              <small>已练</small>
-            </div>
-          </div>
-
-          <div class="master-controls" aria-label="Playback controls">
-            <button class="primary-button" id="playAllButton" type="button">
-              <span aria-hidden="true">▶</span>
-              全部播放
-            </button>
-            <button class="icon-button" id="stopButton" type="button" aria-label="停止">
-              <span aria-hidden="true">■</span>
-            </button>
-          </div>
         </aside>
+
+        <section class="hero-slogan" aria-label="EchoLines slogan">
+          <h2>Your Everyday Companion For Natural Speaking Practice.</h2>
+        </section>
 
         <section class="main-panel">
           <header class="top-bar">
-            <div>
-              <p class="eyebrow">Text to native-style line practice</p>
-              <h2>粘贴文本，按句跟读</h2>
+            <div class="stats-grid" aria-label="Session statistics">
+              <div>
+                <span id="sentenceCount">0</span>
+                <small>句</small>
+              </div>
+              <div>
+                <span id="voiceCount">0</span>
+                <small>AI声音</small>
+              </div>
+              <div>
+                <span id="doneCount">0</span>
+                <small>已练</small>
+              </div>
             </div>
-            <div class="top-actions">
-              <label class="toggle">
-                <input id="autoSplitToggle" type="checkbox" checked>
-                <span>自动分句</span>
-              </label>
-              <button class="ghost-button" id="loadSampleButton" type="button">示例</button>
+            <div class="top-control-row">
+              <div class="master-controls" aria-label="Playback controls">
+                <button class="primary-button" id="playAllButton" type="button">
+                  <span aria-hidden="true">▶</span>
+                  全部播放
+                </button>
+              </div>
+              <div class="top-actions">
+                <label class="toggle">
+                  <input id="autoSplitToggle" type="checkbox" checked>
+                  <span>自动分句</span>
+                </label>
+                <button class="ghost-button" id="loadSampleButton" type="button">示例</button>
+              </div>
             </div>
           </header>
 
           <section class="input-zone" aria-label="Text input">
-            <textarea id="sourceText" spellcheck="false" placeholder="Paste English text here. The page will split it sentence by sentence."></textarea>
+            <textarea id="sourceText" spellcheck="false" placeholder="粘贴文本，按句跟读"></textarea>
             <div class="input-actions">
               <button class="secondary-button" id="splitButton" type="button">
-                <span aria-hidden="true">↵</span>
                 重新分句
               </button>
               <button class="ghost-button" id="clearButton" type="button">清空</button>
@@ -80,7 +84,7 @@
                 <select id="globalVoice"></select>
                 <button class="tiny-button" id="saveDefaultVoiceButton" type="button">设为默认</button>
               </div>
-              <small id="defaultVoiceStatus">未设置默认声音</small>
+              <small id="defaultVoiceStatus" hidden></small>
             </label>
             <label class="global-rate-control">
               <span>全局速度</span>
@@ -89,7 +93,7 @@
                 <output id="globalRateValue">0.88x</output>
                 <button class="tiny-button" id="saveDefaultRateButton" type="button">设为默认</button>
               </div>
-              <small id="defaultRateStatus">未设置默认速度</small>
+              <small id="defaultRateStatus" hidden></small>
             </label>
             <label>
               <span>默认重复</span>
@@ -98,24 +102,42 @@
             <button class="ghost-button" id="applyDefaultsButton" type="button">应用到全部句子</button>
           </section>
 
+          <section class="records-panel" id="recordsPanel" aria-label="Practice records" hidden>
+            <div class="records-header">
+              <div>
+                <h2>练习记录</h2>
+                <p id="recordsSummary">保存你每次跟读的文本、录音、识别文本和评分。</p>
+              </div>
+              <button class="ghost-button" id="closeRecordsButton" type="button">关闭</button>
+            </div>
+            <div class="records-list" id="recordsList"></div>
+          </section>
+
           <details class="shadow-panel" id="shadowPanel">
             <summary>
-              <span>整段影子跟读</span>
-              <span id="shadowSummary">等待文本</span>
+              <span class="section-title">1.整段跟读</span>
+              <span id="shadowSummary" aria-hidden="true"></span>
             </summary>
             <div class="shadow-content">
               <div class="shadow-controls">
                 <button class="secondary-button" id="shadowPlayButton" type="button">
                   <span aria-hidden="true">▶</span>
-                  开始整段跟读
+                  开始跟读
                 </button>
-                <p id="shadowStatus">输入文本后会自动拆成自然语块。</p>
+                <button class="secondary-button" id="shadowReadButton" type="button">
+                  <span aria-hidden="true">▶</span>
+                  全文朗读
+                </button>
+                <button class="ghost-button" id="shadowMarksToggle" type="button">隐藏所有标记</button>
+                <p id="shadowStatus"></p>
               </div>
               <div class="shadow-segments" id="shadowSegments"></div>
+              <div class="attempt-result shadow-attempt-result" id="shadowAttemptResult" hidden></div>
             </div>
           </details>
 
           <section class="sentence-area" aria-label="Sentences">
+            <h2 class="section-title">2.分句跟读</h2>
             <div class="empty-state" id="emptyState">
               <strong>等待文本</strong>
               <span>输入英文后会自动变成可播放的逐句队列。</span>
@@ -132,11 +154,11 @@
           <div class="sentence-copy">
             <div class="sentence-meta">
               <div class="sentence-meta-left">
+                <span class="completion-check" aria-hidden="true"></span>
                 <span class="sentence-index"></span>
                 <span class="audio-state"></span>
               </div>
               <div class="sentence-actions">
-                <button class="tiny-button done-toggle" type="button">标记已练</button>
                 <label class="compact-rate">
                   <span>速度</span>
                   <select class="rate-input">
@@ -157,8 +179,13 @@
                   <span aria-hidden="true">▶</span>
                 </button>
                 <div class="prosody-title">跟读提示</div>
+                <label class="inline-repeat">
+                  <span>重复</span>
+                  <input class="repeat-input" type="number" min="1" max="5">
+                </label>
               </div>
               <div class="prosody-line"></div>
+              <div class="attempt-result" hidden></div>
               <div class="prosody-legend" aria-hidden="true">
                 <span class="legend-stress">重读</span>
                 <span class="legend-weak">弱读</span>
@@ -169,15 +196,9 @@
             </div>
           </div>
         </div>
-        <div class="sentence-settings">
-          <label>
-            <span>重复</span>
-            <input class="repeat-input" type="number" min="1" max="5">
-          </label>
-        </div>
       </article>
     </template>
 
-    <script src="./app.js?v=native-phrasing-4"></script>
+    <script src="./app.js?v=echolines-recorder-1"></script>
   </body>
 </html>
